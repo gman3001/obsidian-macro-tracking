@@ -33,7 +33,7 @@ export default class FoodTrackerPlugin extends Plugin {
 		addIcon(FOOD_TRACKER_ICON_NAME, FOOD_TRACKER_SVG_CONTENT);
 
 		await this.loadSettings();
-		this.initializeCore();
+		await this.initializeCore();
 		this.setupEventListeners();
 		this.registerCodeMirrorExtensions();
 		this.registerMarkdownPostProcessors();
@@ -42,10 +42,10 @@ export default class FoodTrackerPlugin extends Plugin {
 	/**
 	 * Initialize core services and components
 	 */
-	private initializeCore(): void {
+	private async initializeCore(): Promise<void> {
 		// Initialize nutrient cache
 		this.nutrientCache = new NutrientCache(this.app, this.settings.nutrientDirectory);
-		this.nutrientCache.initialize();
+		await this.nutrientCache.initialize();
 
 		// Initialize settings service
 		this.settingsService = new SettingsService();
@@ -125,7 +125,7 @@ export default class FoodTrackerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("create", file => {
 				if (this.nutrientCache.isNutrientFile(file)) {
-					this.nutrientCache.updateCache(file, "create");
+					void this.nutrientCache.updateCache(file, "create");
 				}
 			})
 		);
@@ -133,7 +133,7 @@ export default class FoodTrackerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("delete", file => {
 				if (this.nutrientCache.isNutrientFile(file)) {
-					this.nutrientCache.updateCache(file, "delete");
+					void this.nutrientCache.updateCache(file, "delete");
 				}
 			})
 		);
@@ -141,7 +141,7 @@ export default class FoodTrackerPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("modify", file => {
 				if (this.nutrientCache.isNutrientFile(file)) {
-					this.nutrientCache.updateCache(file, "modify");
+					void this.nutrientCache.updateCache(file, "modify");
 				}
 			})
 		);
@@ -152,7 +152,7 @@ export default class FoodTrackerPlugin extends Plugin {
 					file instanceof TFile &&
 					(this.nutrientCache.isNutrientFile(file) || oldPath.startsWith(this.settings.nutrientDirectory + "/"))
 				) {
-					this.nutrientCache.handleRename(file, oldPath);
+					void this.nutrientCache.handleRename(file, oldPath);
 				} else if (oldPath.startsWith(this.settings.nutrientDirectory + "/")) {
 					// If it's not a file but was in nutrient directory, do a full refresh
 					this.nutrientCache.refresh();

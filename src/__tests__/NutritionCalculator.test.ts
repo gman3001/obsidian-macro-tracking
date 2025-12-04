@@ -7,10 +7,10 @@ describe("calculateNutritionTotals", () => {
 		...overrides,
 	});
 
-	test("returns null when content has no food or workout entries", () => {
+	test("returns null when content has no Food Log section", () => {
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "Regular note without any tags.",
+				content: "Regular note without Food Log heading.",
 			})
 		);
 
@@ -25,7 +25,9 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[apple]] 150g\n#food [[banana]] 50g",
+				content: `## Food Log
+[[apple]] 150g
+[[banana]] 50g`,
 				getNutritionData,
 			})
 		);
@@ -40,38 +42,38 @@ describe("calculateNutritionTotals", () => {
 		expect(result?.clampedTotals.calories).toBeCloseTo(190);
 	});
 
-	test("includes inline nutrition, subtracts workout calories, and preserves workout totals", () => {
+	test("includes inline nutrition in Food Log section", () => {
 		const getNutritionData = jest.fn().mockReturnValue({ calories: 50, fats: 5 });
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: `#food Breakfast 300kcal 20prot
-#workout Run 150kcal
-#food [[bar]] 100g`,
+				content: `## Food Log
+Breakfast 300kcal 20prot
+[[bar]] 100g`,
 				getNutritionData,
 			})
 		);
 
 		expect(result).not.toBeNull();
-		expect(result?.inlineTotals.calories).toBeCloseTo(150); // 300 - 150
+		expect(result?.inlineTotals.calories).toBeCloseTo(300);
 		expect(result?.inlineTotals.protein).toBeCloseTo(20);
-		expect(result?.workoutTotals.calories).toBeCloseTo(150);
 		expect(result?.linkedTotals.calories).toBeCloseTo(50);
-		expect(result?.combinedTotals.calories).toBeCloseTo(200);
+		expect(result?.combinedTotals.calories).toBeCloseTo(350);
 	});
 
-	test("clamps negative totals to zero when workouts exceed intake", () => {
+	test("processes only entries in Food Log section", () => {
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: `#food Snack 200kcal
-#workout Ride 500kcal`,
+				content: `Random text 500kcal
+
+## Food Log
+Snack 200kcal`,
 				getNutritionData: () => null,
 			})
 		);
 
 		expect(result).not.toBeNull();
-		expect(result?.combinedTotals.calories).toBeCloseTo(-300);
-		expect(result?.clampedTotals.calories).toBe(0);
+		expect(result?.inlineTotals.calories).toBeCloseTo(200);
 	});
 
 	test("continues processing when data provider throws and reports the error", () => {
@@ -82,7 +84,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[apple]] 100g",
+				content: `## Food Log
+[[apple]] 100g`,
 				getNutritionData,
 				onReadError,
 			})
@@ -99,7 +102,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 2000,
@@ -133,7 +137,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 2000,
@@ -149,14 +154,14 @@ describe("calculateNutritionTotals", () => {
 		});
 	});
 
-	test("calculates goal progress with workout subtraction", () => {
+	test("calculates goal progress with multiple entries", () => {
 		const getNutritionData = jest.fn().mockReturnValue({ calories: 50 });
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: `#food Breakfast 500kcal
-#workout Running 200kcal
-#food [[snack]] 100g`,
+				content: `## Food Log
+Breakfast 500kcal
+[[snack]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 2000,
@@ -165,12 +170,12 @@ describe("calculateNutritionTotals", () => {
 		);
 
 		expect(result).not.toBeNull();
-		expect(result?.combinedTotals.calories).toBeCloseTo(350);
-		expect(result?.clampedTotals.calories).toBeCloseTo(350);
+		expect(result?.combinedTotals.calories).toBeCloseTo(550);
+		expect(result?.clampedTotals.calories).toBeCloseTo(550);
 		expect(result?.goalProgress?.calories).toEqual({
-			remaining: 1650,
-			percentConsumed: 18,
-			percentRemaining: 83,
+			remaining: 1450,
+			percentConsumed: 28,
+			percentRemaining: 73,
 		});
 	});
 
@@ -179,7 +184,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 0,
@@ -200,7 +206,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 			})
 		);
@@ -214,7 +221,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 2000,
@@ -233,7 +241,8 @@ describe("calculateNutritionTotals", () => {
 
 		const result = calculateNutritionTotals(
 			buildParams({
-				content: "#food [[meal]] 100g",
+				content: `## Food Log
+[[meal]] 100g`,
 				getNutritionData,
 				goals: {
 					calories: 2000,

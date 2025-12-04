@@ -22,13 +22,7 @@ export default class FoodHighlightPostProcessor extends Component {
 	}
 
 	process(el: HTMLElement, _ctx: MarkdownPostProcessorContext): void {
-		const settings = this.settingsService.currentSettings;
-		const options: HighlightOptions = {
-			escapedFoodTag: this.settingsService.currentEscapedFoodTag,
-			escapedWorkoutTag: this.settingsService.currentEscapedWorkoutTag,
-			foodTag: settings.foodTag,
-			workoutTag: settings.workoutTag,
-		};
+		const options: HighlightOptions = {};
 
 		const calorieProvider: CalorieProvider = {
 			getCaloriesForFood: (fileName: string) => {
@@ -105,18 +99,15 @@ export default class FoodHighlightPostProcessor extends Component {
 		}
 	}
 
-	private containsRelevantTags(text: string, options: HighlightOptions): boolean {
-		const tags = [options.escapedFoodTag, options.escapedWorkoutTag].filter(tag => tag.length > 0);
-		if (tags.length === 0) return false;
-
-		const tagPattern = tags.join("|");
-		const tagRegex = new RegExp(`#(${tagPattern})`, "i");
-		return tagRegex.test(text);
+	private containsRelevantTags(text: string, _options: HighlightOptions): boolean {
+		// Check if text contains the ## Food Log heading
+		const foodLogRegex = /^##\s*Food Log$/im;
+		return foodLogRegex.test(text);
 	}
 
 	private highlightMatches(container: HTMLElement, reconstructedText: string, options: HighlightOptions): void {
 		container
-			.querySelectorAll(".food-tracker-value, .food-tracker-nutrition-value, .food-tracker-negative-kcal")
+			.querySelectorAll(".food-tracker-value, .food-tracker-nutrition-value")
 			.forEach(el => {
 				const textNode = document.createTextNode(el.textContent ?? "");
 				el.replaceWith(textNode);
@@ -256,8 +247,6 @@ export default class FoodHighlightPostProcessor extends Component {
 				return "food-tracker-value";
 			case "nutrition":
 				return "food-tracker-nutrition-value";
-			case "negative-kcal":
-				return "food-tracker-negative-kcal";
 		}
 	}
 

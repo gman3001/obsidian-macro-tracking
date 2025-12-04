@@ -97,9 +97,13 @@ export function calculateNutritionTotals(params: NutritionCalculationParams): Nu
 			: trimmedWorkoutTag.replace(SPECIAL_CHARS_REGEX, "\\$&")
 		: null;
 
-	const foodEntries = parseFoodEntries(safeContent, escapedFood);
-	const inlineEntries = parseInlineNutrientEntries(safeContent, escapedFood);
-	const workoutEntries = escapedWorkout ? parseInlineNutrientEntries(safeContent, escapedWorkout) : [];
+	// Parse only lines under '## Food Log' headings
+	const foodLogLines = extractLinesUnderHeading(safeContent, "Food Log");
+
+	const foodEntries = parseFoodEntriesFromLines(foodLogLines);
+	const inlineEntries = parseInlineNutrientEntriesFromLines(foodLogLines);
+	// Workout entries are now parsed from Food Log section as well (inline format)
+	const workoutEntries: InlineNutrientEntry[] = [];
 
 	if (foodEntries.length === 0 && inlineEntries.length === 0 && workoutEntries.length === 0) {
 		return null;
@@ -134,33 +138,56 @@ export function calculateNutritionTotals(params: NutritionCalculationParams): Nu
 	};
 }
 
-function parseFoodEntries(content: string, escapedFoodTag: string): FoodEntry[] {
-	const entries: FoodEntry[] = [];
+function extractLinesUnderHeading(content: string, headingText: string): string[] {
 	const lines = content.split("\n");
-	const entryRegex = createLinkedFoodRegex(escapedFoodTag);
+	const result: string[] = [];
+	let inSection = false;
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const headingMatch = line.match(/^(#{1,6})\s*(.*)$/);
+		if (headingMatch) {
+			const level = headingMatch[1].length;
+			const text = headingMatch[2].trim();
+			if (level === 2 && text.toLowerCase() === headingText.toLowerCase()) {
+				inSection = true;
+				continue; // skip the heading itself
+			}
+			if (inSection && level <= 2) {
+				// reached a heading of same or higher level -> exit section
+				break;
+			}
+		}
+
+		if (inSection) {
+			result.push(line);
+		}
+	}
+
+	return result;
+}
+
+function parseFoodEntriesFromLines(lines: string[]): FoodEntry[] {
+	const entries: FoodEntry[] = [];
+	const linkedRegex = /\[\[([^\]]+)\]\]\s+(\d+(?:\.\d+)?)(kg|lb|cups?|tbsp|tsp|ml|oz|g|l|pcs?)/i;
 
 	for (const line of lines) {
-		const match = entryRegex.exec(line);
+		const match = linkedRegex.exec(line);
 		if (match) {
 			const filename = match[1];
 			const amount = parseFloat(match[2]);
 			const unit = match[3].toLowerCase();
 
-			entries.push({
-				filename,
-				amount,
-				unit,
-			});
+			entries.push({ filename, amount, unit });
 		}
 	}
 
 	return entries;
 }
 
-function parseInlineNutrientEntries(content: string, escapedFoodTag: string): InlineNutrientEntry[] {
+function parseInlineNutrientEntriesFromLines(lines: string[]): InlineNutrientEntry[] {
 	const entries: InlineNutrientEntry[] = [];
-	const lines = content.split("\n");
-	const inlineRegex = createInlineNutritionRegex(escapedFoodTag);
+	const inlineRegex = /(?!\[\[)([^\s][^\n]*?)\s+(-?\d+(?:\.\d+)?(?:kcal|fat|satfat|prot|carbs|sugar|fiber|sodium)(?:\s+-?\d+(?:\.\d+)?(?:kcal|fat|satfat|prot|carbs|sugar|fiber|sodium))*)/i;
 
 	for (const line of lines) {
 		const foodMatch = inlineRegex.exec(line);

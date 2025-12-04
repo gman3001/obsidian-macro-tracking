@@ -1,9 +1,9 @@
-import { createNutritionValueRegex, createCombinedFoodHighlightRegex, getUnitMultiplier } from "./constants";
+import { createNutritionValueRegex, getUnitMultiplier } from "./constants";
 
 export interface HighlightRange {
 	start: number;
 	end: number;
-	type: "nutrition" | "amount" | "negative-kcal";
+	type: "nutrition" | "amount";
 }
 
 export interface CalorieAnnotation {
@@ -17,86 +17,80 @@ export interface CalorieProvider {
 }
 
 export interface HighlightOptions {
-	escapedFoodTag: string;
-	escapedWorkoutTag: string;
-	foodTag: string;
-	workoutTag: string;
+	// Legacy fields (may be empty now)
+	escapedFoodTag?: string;
+	escapedWorkoutTag?: string;
+	foodTag?: string;
+	workoutTag?: string;
 }
 
 /**
- * Extracts highlight ranges from text content for food entries
- * This is a pure function with no Obsidian dependencies for easy testing
+ * Extracts lines that fall under a specific markdown heading (e.g., ## Food Log)
+ */
+export function extractLinesUnderHeading(text: string, headingText: string): Array<{ line: string; offset: number }> {
+	const lines = text.split("\n");
+	const result: Array<{ line: string; offset: number }> = [];
+	let inSection = false;
+	let offset = 0;
+
+	for (const line of lines) {
+		const headingMatch = line.match(/^(#{1,6})\s*(.*)$/);
+		if (headingMatch) {
+			const level = headingMatch[1].length;
+			const heading = headingMatch[2].trim();
+			if (level === 2 && heading.toLowerCase() === headingText.toLowerCase()) {
+				inSection = true;
+				offset += line.length + 1;
+				continue;
+			}
+			if (inSection && level <= 2) {
+				break; // Exit section on same/higher level heading
+			}
+		}
+
+		if (inSection) {
+			result.push({ line, offset });
+		}
+		offset += line.length + 1;
+	}
+
+	return result;
+}
+
+/**
+ * Extracts highlight ranges for linked food entries and inline nutrition values
+ * Now operates on lines under ## Food Log heading without requiring #food tag
  */
 export function extractFoodHighlightRanges(
 	text: string,
 	lineStart: number,
-	options: HighlightOptions
+	_options: HighlightOptions
 ): HighlightRange[] {
 	const ranges: HighlightRange[] = [];
-	const combinedRegex = createCombinedFoodHighlightRegex(options.escapedFoodTag, options.escapedWorkoutTag);
 
-	const match = combinedRegex.exec(text);
-	if (match?.groups && match.index !== undefined) {
-		const fullMatchIndex = match.index;
+	// Match linked food: [[Food Name]] 100g
+	const linkedRegex = /\[\[([^\]]+)\]\]\s+(\d+(?:\.\d+)?)(kg|lb|cups?|tbsp|tsp|ml|oz|g|l|pcs?)/gi;
+	const inlineRegex = /(-?\d+(?:\.\d+)?)\s*(kcal|fat|satfat|prot|carbs|sugar|fiber|sodium)/gi;
 
-		const matchedTag = match.groups.tag?.toLowerCase() ?? "";
-		const workoutTag = options.workoutTag.toLowerCase();
-		const isWorkoutTag = workoutTag.length > 0 && matchedTag === workoutTag;
+	let linkedMatch;
+	while ((linkedMatch = linkedRegex.exec(text)) !== null) {
+		const amountStart = lineStart + linkedMatch.index + linkedMatch[0].indexOf(linkedMatch[2]);
+		const amountEnd = amountStart + linkedMatch[2].length + linkedMatch[3].length + 1;
+		ranges.push({ start: amountStart, end: amountEnd, type: "amount" });
+	}
 
-		if (match.groups.nutritionValues) {
-			// Inline nutrition format: highlight each nutritional value
-			const nutritionString = match.groups.nutritionValues;
-			// Calculate the position of the nutrition values within the full match
-			const textBeforeNutrition = match[0].indexOf(nutritionString);
-			const nutritionStringStart = lineStart + fullMatchIndex + textBeforeNutrition;
-
-			// Find and highlight each nutritional value within the nutrition string
-			const nutritionValueRegex = createNutritionValueRegex();
-			const allValueMatches = nutritionString.matchAll(nutritionValueRegex);
-
-			for (const valueMatch of allValueMatches) {
-				const valueStart = nutritionStringStart + valueMatch.index;
-				const valueEnd = valueStart + valueMatch[0].length;
-				const value = valueMatch[0];
-
-				const isNegative = value.startsWith("-");
-				const isKcal = value.toLowerCase().includes("kcal");
-
-				// Skip negative workout calories (they're invalid and ignored in calculations)
-				if (isWorkoutTag && isNegative && isKcal) {
-					continue;
-				}
-
-				// Determine highlight type
-				const isNegativeKcal = isNegative && isKcal;
-				const isWorkoutKcal = isWorkoutTag && isKcal;
-
-				ranges.push({
-					start: valueStart,
-					end: valueEnd,
-					type: isNegativeKcal || isWorkoutKcal ? "negative-kcal" : "nutrition",
-				});
-			}
-		} else if (match.groups.amountValue) {
-			// Linked food format: highlight the amount
-			const amountString = match.groups.amountValue;
-			// Calculate the position of the amount value within the full match
-			const textBeforeAmount = match[0].indexOf(amountString);
-			const amountStart = lineStart + fullMatchIndex + textBeforeAmount;
-			const amountEnd = amountStart + amountString.length;
-			ranges.push({
-				start: amountStart,
-				end: amountEnd,
-				type: "amount",
-			});
-		}
+	let inlineMatch;
+	while ((inlineMatch = inlineRegex.exec(text)) !== null) {
+		const valueStart = lineStart + inlineMatch.index;
+		const valueEnd = valueStart + inlineMatch[0].length;
+		ranges.push({ start: valueStart, end: valueEnd, type: "nutrition" });
 	}
 
 	return ranges;
 }
 
 /**
- * Processes multiple lines of text and extracts all highlight ranges
+ * Processes multiple lines and extracts all highlight ranges
  */
 export function extractMultilineHighlightRanges(
 	text: string,
@@ -104,66 +98,45 @@ export function extractMultilineHighlightRanges(
 	options: HighlightOptions
 ): HighlightRange[] {
 	const ranges: HighlightRange[] = [];
-	const lines = text.split("\n");
-	let lineStart = startOffset;
+	const linesByOffset = extractLinesUnderHeading(text, "Food Log");
 
-	for (const line of lines) {
-		const lineRanges = extractFoodHighlightRanges(line, lineStart, options);
+	for (const { line, offset } of linesByOffset) {
+		const lineRanges = extractFoodHighlightRanges(line, startOffset + offset, options);
 		ranges.push(...lineRanges);
-		lineStart += line.length + 1; // +1 for newline
 	}
 
 	return ranges;
 }
 
 /**
- * Extracts inline calorie annotations for food and workout entries
- * Supports all unit types (g, kg, lb, cups, tbsp, tsp, ml, oz, l, pcs) and direct kcal entries
- * Returns the document position where the annotation should be inserted and the formatted calorie text
- * Annotations are always placed at the end of the line
+ * Extracts inline calorie annotations for linked food entries
+ * Looks only under ## Food Log heading, no tag requirement
  */
 export function extractInlineCalorieAnnotations(
 	text: string,
 	startOffset: number,
-	options: HighlightOptions,
+	_options: HighlightOptions,
 	calorieProvider: CalorieProvider
 ): CalorieAnnotation[] {
 	const annotations: CalorieAnnotation[] = [];
 
-	const tags = [options.escapedFoodTag, options.escapedWorkoutTag].filter(tag => tag.length > 0);
-	if (tags.length === 0) {
-		return annotations;
-	}
+	const linesByOffset = extractLinesUnderHeading(text, "Food Log");
 
-	const tagPattern = tags.join("|");
+	for (const { line, offset } of linesByOffset) {
+		const linkedFoodRegex = /\[\[([^\]]+)\]\]\s+(\d+(?:\.\d+)?)(kg|lb|cups?|tbsp|tsp|ml|oz|g|l|pcs?)/gi;
 
-	const linkedFoodRegex = new RegExp(
-		`#(${tagPattern})\\s+\\[\\[([^\\]]+)\\]\\]\\s+(\\d+(?:\\.\\d+)?)(kg|lb|cups?|tbsp|tsp|ml|oz|g|l|pcs?)`,
-		"gi"
-	);
-
-	const directKcalRegex = new RegExp(
-		`#(${tagPattern})\\s+(?!\\[\\[)[^\\s]+(?:\\s+[^\\s]+)*?\\s+(\\d+(?:\\.\\d+)?)kcal`,
-		"gi"
-	);
-
-	const lines = text.split("\n");
-	let lineStartOffset = startOffset;
-
-	for (const line of lines) {
-		const lineEndOffset = lineStartOffset + line.length;
-
-		for (const match of line.matchAll(linkedFoodRegex)) {
-			const matchedTag = match[1].toLowerCase();
-			const rawFileName = match[2];
-			const amountString = match[3];
-			const unit = match[4];
+		let match;
+		while ((match = linkedFoodRegex.exec(line)) !== null) {
+			const rawFileName = match[1];
+			const amountString = match[2];
+			const unit = match[3];
 
 			const amount = parseFloat(amountString);
 			if (!isFinite(amount) || amount <= 0) {
 				continue;
 			}
 
+			// Extract base filename (handle #anchors and paths)
 			const normalizedFileName = rawFileName.split("|")[0].split("#")[0].split("/").pop()?.trim();
 			if (!normalizedFileName) {
 				continue;
@@ -187,41 +160,12 @@ export function extractInlineCalorieAnnotations(
 				continue;
 			}
 
-			const isWorkout = options.workoutTag.length > 0 && matchedTag === options.workoutTag.toLowerCase();
-			const displayCalories = isWorkout ? -formattedCalories : formattedCalories;
-			const normalizedCalories = displayCalories === 0 ? 0 : displayCalories;
-
+			const lineEnd = startOffset + offset + line.length;
 			annotations.push({
-				position: lineEndOffset,
-				text: `${normalizedCalories}kcal`,
+				position: lineEnd,
+				text: `${formattedCalories}kcal`,
 			});
 		}
-
-		for (const match of line.matchAll(directKcalRegex)) {
-			const matchedTag = match[1].toLowerCase();
-			const caloriesString = match[2];
-
-			const calories = parseFloat(caloriesString);
-			if (!Number.isFinite(calories) || calories < 0) {
-				continue;
-			}
-
-			const formattedCalories = Math.round(calories);
-			if (!Number.isFinite(formattedCalories) || formattedCalories < 0) {
-				continue;
-			}
-
-			const isWorkout = options.workoutTag.length > 0 && matchedTag === options.workoutTag.toLowerCase();
-			const displayCalories = isWorkout ? -formattedCalories : formattedCalories;
-			const normalizedCalories = displayCalories === 0 ? 0 : displayCalories;
-
-			annotations.push({
-				position: lineEndOffset,
-				text: `${normalizedCalories}kcal`,
-			});
-		}
-
-		lineStartOffset = lineEndOffset + 1;
 	}
 
 	return annotations;

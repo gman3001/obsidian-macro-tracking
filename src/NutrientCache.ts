@@ -39,6 +39,9 @@ interface NutrientData {
 export default class NutrientCache implements NutrientProvider {
 	private app: App;
 	private nutrientDirectory: string;
+	// When using a single-file database, this will be the file path (e.g. "nutrients.md")
+	private singleFilePath: string | null = null;
+	private isSingleFileMode: boolean = false;
 	private nutrientDataCache: Map<string, { name: string; data: NutrientData }> = new Map(); // file path -> { name, data }
 	private nameToPathMap: Map<string, string> = new Map(); // nutrient name -> file path
 	private changeListeners: Set<() => void> = new Set();
@@ -72,16 +75,34 @@ export default class NutrientCache implements NutrientProvider {
 	 * This method should be called once after creating the cache instance.
 	 * It will clear any existing cache data and rebuild from current files.
 	 */
-	initialize(): void {
+	async initialize(): Promise<void> {
 		this.nutrientDataCache.clear();
 		this.nameToPathMap.clear();
 
 		try {
-			const allMarkdownFiles = this.app.vault.getMarkdownFiles();
-			const nutrientFiles = allMarkdownFiles.filter(file => file.path.startsWith(this.nutrientDirectory + "/"));
+			const candidate = this.nutrientDirectory;
+			const abstractFile = this.app.vault.getAbstractFileByPath(candidate);
 
-			for (const file of nutrientFiles) {
-				this.processNutrientFile(file);
+			if (abstractFile && (abstractFile as any).extension === "json" && (abstractFile as any).path) {
+				// Single JSON file mode
+				this.isSingleFileMode = true;
+				this.singleFilePath = (abstractFile as any).path;
+				await this.processSingleFile(abstractFile as TFile);
+			} else if (abstractFile && (abstractFile as any).extension === "md" && (abstractFile as any).path) {
+				// Support legacy markdown single-file (frontmatter)
+				this.isSingleFileMode = true;
+				this.singleFilePath = (abstractFile as any).path;
+				await this.processSingleFile(abstractFile as TFile);
+			} else {
+				this.isSingleFileMode = false;
+				this.singleFilePath = null;
+
+				const allMarkdownFiles = this.app.vault.getMarkdownFiles();
+				const nutrientFiles = allMarkdownFiles.filter(file => file.path.startsWith(this.nutrientDirectory + "/"));
+
+				for (const file of nutrientFiles) {
+					this.processNutrientFile(file);
+				}
 			}
 
 			this.notifyChange();
@@ -139,15 +160,34 @@ export default class NutrientCache implements NutrientProvider {
 	}
 
 	refresh(): void {
-		this.initialize();
+		void this.initialize();
 	}
 
 	isNutrientFile(file: TAbstractFile): file is TFile {
-		return file instanceof TFile && file.extension === "md" && file.path.startsWith(this.nutrientDirectory + "/");
+		if (!(file instanceof TFile)) return false;
+		if (this.isSingleFileMode && this.singleFilePath) {
+			return file.path === this.singleFilePath;
+		}
+		return file.extension === "md" && file.path.startsWith(this.nutrientDirectory + "/");
 	}
 
-	updateCache(file: TFile, action: "create" | "delete" | "modify") {
+	async updateCache(file: TFile, action: "create" | "delete" | "modify") {
 		try {
+			// If we're in single-file mode and the changed file is the DB file, reprocess whole DB
+			if (this.isSingleFileMode) {
+				if (file.path === this.singleFilePath) {
+					if (action === "delete") {
+						this.nutrientDataCache.clear();
+						this.nameToPathMap.clear();
+					} else {
+						await this.processSingleFile(file);
+					}
+					this.notifyChange();
+					return;
+				}
+				// If not the DB file, ignore unless it resides under the nutrientDirectory (fallback)
+			}
+
 			if (action === "delete") {
 				this.removeFileFromCache(file.path);
 				this.notifyChange();
@@ -173,18 +213,80 @@ export default class NutrientCache implements NutrientProvider {
 	 * Handles file rename events by cleaning up the old path and processing the new one
 	 * More efficient than a full refresh for single file renames
 	 */
-	handleRename(file: TFile, oldPath: string): void {
+	async handleRename(file: TFile, oldPath: string): Promise<void> {
 		// Clean up old entry if it was a nutrient file
+		if (this.isSingleFileMode) {
+			// If the DB file was renamed, update singleFilePath and reprocess
+			if (oldPath === this.singleFilePath) {
+				// Try to detect new single-file path
+				if (file.path.endsWith(".md") || file.path.endsWith(".json")) {
+					this.singleFilePath = file.path;
+					await this.processSingleFile(file);
+				} else {
+					// DB removed/renamed to non-md -> fall back to directory mode
+					this.isSingleFileMode = false;
+					this.singleFilePath = null;
+					this.refresh();
+				}
+				this.notifyChange();
+				return;
+			}
+		}
+
+		// Directory-mode rename handling
 		if (oldPath.startsWith(this.nutrientDirectory + "/") && oldPath.endsWith(".md")) {
 			this.removeFileFromCache(oldPath);
 		}
 
-		// Process new file if it's a nutrient file
 		if (this.isNutrientFile(file)) {
 			this.processNutrientFile(file);
 		}
 
 		this.notifyChange();
+	}
+
+	/**
+	 * Process a single-file nutrient DB. Expected format: frontmatter contains `foods` array
+	 * where each item is an object with `name` and nutrient fields (calories, protein, etc.).
+	 */
+	private async processSingleFile(file: TFile): Promise<void> {
+		this.nutrientDataCache.clear();
+		this.nameToPathMap.clear();
+
+		try {
+			const content = await this.app.vault.cachedRead(file);
+
+			// Try JSON first; if parsing fails, fall back to frontmatter 'foods'
+			let parsed: any = null;
+			try {
+				parsed = JSON.parse(content);
+			} catch (jsonErr) {
+				parsed = this.app.metadataCache.getFileCache(file)?.frontmatter ?? null;
+			}
+
+			const foods = Array.isArray(parsed?.foods) ? parsed.foods : Array.isArray(parsed) ? parsed : [];
+
+			for (const item of foods) {
+				if (!item || !item.name) continue;
+				const nutrientName = String(item.name);
+				const data: NutrientData = {};
+				data.calories = this.parseNumber(item.calories);
+				data.fats = this.parseNumber(item.fats);
+				data.saturated_fats = this.parseNumber(item.saturated_fats ?? item.saturatedFats);
+				data.protein = this.parseNumber(item.protein);
+				data.carbs = this.parseNumber(item.carbs ?? item.carbohydrates);
+				data.fiber = this.parseNumber(item.fiber);
+				data.sugar = this.parseNumber(item.sugar);
+				data.sodium = this.parseNumber(item.sodium);
+				data.serving_size = this.parseNumber(item.serving_size ?? item.servingSize);
+
+				const key = `${file.path}#${nutrientName}`;
+				this.nutrientDataCache.set(key, { name: nutrientName, data });
+				this.nameToPathMap.set(nutrientName, key);
+			}
+		} catch (error) {
+			console.error("Error processing single-file nutrient DB:", error);
+		}
 	}
 
 	private extractNutrientName(file: TFile): string | null {
@@ -270,11 +372,19 @@ export default class NutrientCache implements NutrientProvider {
 	 * ```
 	 */
 	getFileNameFromNutrientName(nutrientName: string): string | null {
-		const filePath = this.nameToPathMap.get(nutrientName);
-		if (!filePath) return null;
+		const mapped = this.nameToPathMap.get(nutrientName);
+		if (!mapped) return null;
 
-		// Extract basename from path for backward compatibility
-		const parts = filePath.split("/");
+		// If single-file mode mapping (`path#Heading`), return `file#Heading` so suggestions produce [[file#Heading]]
+		if (mapped.includes("#")) {
+			const [filePath, heading] = mapped.split("#");
+			const parts = filePath.split("/");
+			const basename = parts[parts.length - 1].replace(".md", "");
+			return `${basename}#${heading}`;
+		}
+
+		// Directory mode: return basename without extension
+		const parts = mapped.split("/");
 		return parts[parts.length - 1].replace(".md", "");
 	}
 
@@ -294,13 +404,41 @@ export default class NutrientCache implements NutrientProvider {
 	 * ```
 	 */
 	getNutritionData(filename: string): NutrientData | null {
-		// Try direct lookup by filename (basename without .md)
-		for (const [path, entry] of this.nutrientDataCache) {
-			const basename = path.split("/").pop()?.replace(".md", "");
-			if (basename === filename) {
-				return entry.data;
+		// If filename contains a hash (file#heading), prefer lookup by heading
+		try {
+			if (filename.includes("#")) {
+				const parts = filename.split("#");
+				const heading = parts.slice(1).join("#");
+				// Try to find an entry whose key ends with `#${heading}`
+				for (const [key, entry] of this.nutrientDataCache) {
+					if (key.endsWith(`#${heading}`)) return entry.data;
+				}
 			}
+
+			// First try: direct name lookup (supports single-file name mappings)
+			const mapped = this.nameToPathMap.get(filename);
+			if (mapped) {
+				const entry = this.nutrientDataCache.get(mapped);
+				if (entry) return entry.data;
+			}
+
+			// Second try: basename match for directory-mode files
+			for (const [path, entry] of this.nutrientDataCache) {
+				const basename = path.split("/").pop()?.replace(".md", "");
+				if (basename === filename) {
+					return entry.data;
+				}
+			}
+
+			// Third try: case-insensitive name match
+			const lower = filename.toLowerCase();
+			for (const [key, entry] of this.nutrientDataCache) {
+				if (entry.name.toLowerCase() === lower) return entry.data;
+			}
+		} catch (error) {
+			console.error("Error in getNutritionData lookup:", error);
 		}
+
 		return null;
 	}
 
@@ -308,7 +446,7 @@ export default class NutrientCache implements NutrientProvider {
 		if (this.nutrientDirectory !== newDirectory) {
 			this.nutrientDirectory = newDirectory;
 			// Re-initialize cache to reflect the new directory
-			this.initialize();
+			void this.initialize();
 		}
 	}
 }

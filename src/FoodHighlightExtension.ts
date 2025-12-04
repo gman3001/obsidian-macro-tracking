@@ -14,10 +14,6 @@ import NutrientCache from "./NutrientCache";
  */
 export default class FoodHighlightExtension extends Component {
 	private settingsService: SettingsService;
-	private escapedFoodTag: string = "";
-	private escapedWorkoutTag: string = "";
-	private foodTag: string = "";
-	private workoutTag: string = "";
 	private showCalorieHints: boolean = true;
 	private subscription: Subscription;
 	private nutrientCache: NutrientCache;
@@ -35,12 +31,7 @@ export default class FoodHighlightExtension extends Component {
 
 	onload() {
 		this.subscription = this.settingsService.settings$.subscribe(settings => {
-			this.foodTag = settings.foodTag;
-			this.workoutTag = settings.workoutTag;
 			this.showCalorieHints = settings.showCalorieHints;
-			this.escapedFoodTag = this.foodTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			this.escapedWorkoutTag = this.workoutTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 			this.reconfigureEditors();
 		});
 
@@ -89,10 +80,6 @@ export default class FoodHighlightExtension extends Component {
 			class: "food-tracker-nutrition-value",
 		});
 
-		const negativeKcalDecoration = Decoration.mark({
-			class: "food-tracker-negative-kcal",
-		});
-
 		const calorieProvider: CalorieProvider = {
 			getCaloriesForFood: (fileName: string) => {
 				const normalized = fileName.trim();
@@ -132,13 +119,9 @@ export default class FoodHighlightExtension extends Component {
 			}
 		}
 
-		const getHighlightOptions = () => ({
-			escapedFoodTag: this.escapedFoodTag,
-			escapedWorkoutTag: this.escapedWorkoutTag,
-			foodTag: this.foodTag,
-			workoutTag: this.workoutTag,
-			showCalorieHints: this.showCalorieHints,
-		});
+		const getHighlightOptions = () => ({});
+		const showCalorieHints = this.showCalorieHints;
+		const calorieProviderRef = calorieProvider;
 
 		const foodHighlightPlugin = ViewPlugin.fromClass(
 			class {
@@ -154,20 +137,9 @@ export default class FoodHighlightExtension extends Component {
 					}
 				}
 
-				/**
-				 * Scans visible text for food entries and creates decorations for highlighting
-				 * Uses the extracted FoodHighlightCore for testable highlighting logic
-				 */
 				buildDecorations(view: EditorView): DecorationSet {
 					const builder = new RangeSetBuilder<Decoration>();
-
-					// Get current escaped tags from plugin instance through closure
-					const { escapedFoodTag, escapedWorkoutTag, foodTag, workoutTag, showCalorieHints } = getHighlightOptions();
-
-					// Skip if tags are not yet initialized
-					if (!escapedFoodTag || !foodTag) {
-						return builder.finish();
-					}
+					const options = getHighlightOptions();
 
 					type DecorationItem = {
 						from: number;
@@ -180,22 +152,11 @@ export default class FoodHighlightExtension extends Component {
 					for (let { from, to } of view.visibleRanges) {
 						const text = view.state.doc.sliceString(from, to);
 
-						// Extract highlight ranges using the pure function
-						const options = {
-							escapedFoodTag,
-							escapedWorkoutTag,
-							foodTag,
-							workoutTag,
-						};
-
 						const ranges = extractMultilineHighlightRanges(text, from, options);
 
-						// Convert ranges to decoration items
 						for (const range of ranges) {
 							let decoration;
-							if (range.type === "negative-kcal") {
-								decoration = negativeKcalDecoration;
-							} else if (range.type === "nutrition") {
+							if (range.type === "nutrition") {
 								decoration = nutritionValueDecoration;
 							} else {
 								decoration = foodAmountDecoration;
@@ -208,7 +169,7 @@ export default class FoodHighlightExtension extends Component {
 						}
 
 						if (showCalorieHints) {
-							const calorieAnnotations = extractInlineCalorieAnnotations(text, from, options, calorieProvider);
+							const calorieAnnotations = extractInlineCalorieAnnotations(text, from, options, calorieProviderRef);
 
 							for (const annotation of calorieAnnotations) {
 								const widget = Decoration.widget({
